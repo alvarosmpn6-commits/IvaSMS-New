@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Bot configuration
-BOT_TOKEN = os.getenv('8748391062:AAG79sIUEN4PdK13tQ6Iy2N7p6X_9rUTuqQ)
-GROUP_ID = os.getenv('-1003791623426')
+BOT_TOKEN = os.getenv('8743375049:AAGz4twVBFmGU4fCPhvjjFlwKoJ_o0vmti4')
+GROUP_ID = os.getenv('-1003586517901')
 IVASMS_EMAIL = os.getenv('alvarosmpn6@gmail.com')
 IVASMS_PASSWORD = os.getenv('dinalistiani')
 
