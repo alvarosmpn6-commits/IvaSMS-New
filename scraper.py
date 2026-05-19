@@ -15,7 +15,6 @@ class IVASMSScraper:
         self.base_url = "https://www.ivasms.com"
         self.is_logged_in = False
         
-        # Set headers to mimic a real browser
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -29,7 +28,6 @@ class IVASMSScraper:
         try:
             print(f"Attempting to login to IVASMS with email: {self.email}")
             
-            # Get login page first
             login_url = f"{self.base_url}/login"
             response = self.session.get(login_url)
             
@@ -39,13 +37,11 @@ class IVASMSScraper:
             
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # Find CSRF token if present
             csrf_token = None
             csrf_input = soup.find('input', {'name': '_token'})
             if csrf_input:
                 csrf_token = csrf_input.get('value')
             
-            # Prepare login data
             login_data = {
                 'email': self.email,
                 'password': self.password,
@@ -54,18 +50,14 @@ class IVASMSScraper:
             if csrf_token:
                 login_data['_token'] = csrf_token
             
-            # Submit login form
             login_response = self.session.post(login_url, data=login_data)
             
-            # Check if login was successful
             if login_response.status_code == 200:
-                # Look for dashboard or account indicators
                 if 'dashboard' in login_response.url.lower() or 'account' in login_response.url.lower():
                     self.is_logged_in = True
                     print("Successfully logged in to IVASMS")
                     return True
                 
-                # Check page content for login success indicators
                 soup = BeautifulSoup(login_response.content, 'html.parser')
                 if soup.find(text=re.compile(r'dashboard|account|logout', re.I)):
                     self.is_logged_in = True
@@ -86,7 +78,6 @@ class IVASMSScraper:
                 return []
         
         try:
-            # Common paths for SMS/message history
             possible_paths = [
                 '/messages',
                 '/sms',
@@ -110,11 +101,10 @@ class IVASMSScraper:
                             messages.extend(page_messages)
                             print(f"Found {len(page_messages)} messages on {path}")
                             break
-                except Exception as e:
+                except Exception:
                     continue
             
             if not messages:
-                # Try to find any SMS-like content on the main page
                 dashboard_response = self.session.get(f"{self.base_url}/dashboard")
                 if dashboard_response.status_code == 200:
                     soup = BeautifulSoup(dashboard_response.content, 'html.parser')
@@ -124,6 +114,7 @@ class IVASMSScraper:
             
         except Exception as e:
             print(f"Error fetching messages: {e}")
+            self.is_logged_in = False  # Force re-login on next call
             return []
     
     def _extract_messages_from_page(self, soup):
@@ -131,33 +122,26 @@ class IVASMSScraper:
         messages = []
         
         try:
-            # Look for common table/list structures containing SMS data
-            # Try different selectors that might contain SMS messages
-            
-            # Method 1: Look for tables with SMS data
             tables = soup.find_all('table')
             for table in tables:
-                rows = table.find_all('tr')[1:]  # Skip header row
+                rows = table.find_all('tr')[1:]
                 for row in rows:
                     cells = row.find_all(['td', 'th'])
-                    if len(cells) >= 3:  # Minimum columns for phone, service, message
+                    if len(cells) >= 3:
                         message_data = self._extract_message_from_row(cells)
                         if message_data:
                             messages.append(message_data)
             
-            # Method 2: Look for div containers with message data
             message_divs = soup.find_all('div', class_=re.compile(r'message|sms|otp', re.I))
             for div in message_divs:
                 message_data = self._extract_message_from_div(div)
                 if message_data:
                     messages.append(message_data)
             
-            # Method 3: Look for any text that looks like OTP messages
             text_content = soup.get_text()
             potential_otps = re.findall(r'\b\d{4,6}\b', text_content)
             if potential_otps:
-                # Try to extract context around OTPs
-                for otp in potential_otps[:5]:  # Limit to first 5 to avoid spam
+                for otp in potential_otps[:5]:
                     message_data = {
                         'otp': otp,
                         'phone': self._extract_phone_from_context(text_content, otp),
@@ -178,35 +162,23 @@ class IVASMSScraper:
             if len(cells) < 3:
                 return None
             
-            # Common table structures:
-            # [Phone, Service, Message, Time] or [Time, Phone, Service, Message]
-            
             phone = ""
             service = ""
             message = ""
             timestamp = datetime.now().strftime('%H:%M:%S')
             
-            # Try to identify columns based on content
             for cell in cells:
                 cell_text = cell.get_text(strip=True)
                 
-                # Phone number detection
                 if re.search(r'\+?\d{10,15}', cell_text):
                     phone = clean_phone_number(cell_text)
-                
-                # Service name detection
                 elif re.search(r'facebook|google|instagram|twitter|whatsapp|telegram|discord', cell_text, re.I):
                     service = clean_service_name(cell_text)
-                
-                # Message content (usually longest text)
                 elif len(cell_text) > 20:
                     message = cell_text
-                
-                # Time detection
                 elif re.search(r'\d{1,2}:\d{2}', cell_text):
                     timestamp = cell_text
             
-            # Extract OTP from message
             otp = extract_otp_from_text(message)
             
             if otp:
@@ -228,16 +200,13 @@ class IVASMSScraper:
         try:
             text = div.get_text(strip=True)
             
-            # Extract OTP
             otp = extract_otp_from_text(text)
             if not otp:
                 return None
             
-            # Extract phone
             phone_match = re.search(r'\+?\d{10,15}', text)
             phone = clean_phone_number(phone_match.group()) if phone_match else "N/A"
             
-            # Extract service
             service_match = re.search(r'(facebook|google|instagram|twitter|whatsapp|telegram|discord)', text, re.I)
             service = clean_service_name(service_match.group()) if service_match else "Unknown"
             
@@ -256,7 +225,6 @@ class IVASMSScraper:
     
     def _extract_phone_from_context(self, text, otp):
         """Extract phone number from context around OTP"""
-        # Look for phone numbers near the OTP
         otp_index = text.find(otp)
         if otp_index != -1:
             context = text[max(0, otp_index-100):otp_index+100]
@@ -267,7 +235,6 @@ class IVASMSScraper:
     
     def _extract_service_from_context(self, text, otp):
         """Extract service name from context around OTP"""
-        # Look for service names near the OTP
         otp_index = text.find(otp)
         if otp_index != -1:
             context = text[max(0, otp_index-100):otp_index+100].lower()
@@ -280,27 +247,37 @@ class IVASMSScraper:
     def test_connection(self):
         """Test connection to IVASMS"""
         try:
-            response = self.session.get(self.base_url)
+            response = self.session.get(self.base_url, timeout=10)
             return response.status_code == 200
-        except:
+        except Exception:
             return False
 
+
 def create_scraper(email, password):
-    """Factory function to create and test scraper"""
+    """
+    Factory function to create and verify scraper.
+
+    FIX: Previously only tested connectivity, not login. Now also verifies
+    that the login succeeds before returning the scraper instance. Returns
+    None if either step fails, so the caller knows initialization failed.
+    """
     scraper = IVASMSScraper(email, password)
     
     if not scraper.test_connection():
-        print("Warning: Cannot connect to IVASMS.com")
+        print("Warning: Cannot connect to IVASMS.com — check network or site availability")
+        return None
+    
+    if not scraper.login():
+        print("Warning: IVASMS login failed — check IVASMS_EMAIL and IVASMS_PASSWORD env vars")
         return None
     
     return scraper
 
-# Demo/test function
+
 def test_scraper():
     """Test the scraper with dummy data"""
-    # This is for testing only - replace with real credentials
-    email = "test@example.com"
-    password = "testpassword"
+    email = "samicdeym@gmail.com"
+    password = "c59FiuhM54%6%Mf"
     
     scraper = create_scraper(email, password)
     if scraper:
