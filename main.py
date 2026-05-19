@@ -11,7 +11,7 @@ from otp_filter import otp_filter
 from utils import format_otp_message, format_multiple_otps, get_status_message
 import threading
 import time
-import requests as http_requests  # for sync HTTP to Telegram
+import requests as http_requests
 
 load_dotenv()
 
@@ -39,7 +39,7 @@ bot_stats = {
 telegram_app = None
 scraper = None
 
-# ── Sync Telegram sender (works from any thread, no event loop needed) ─────────
+# ── Sync Telegram sender ────────────────────────────────────────────────────────
 
 def send_telegram_message(message, parse_mode='HTML'):
     """Send message via raw HTTP — safe to call from any thread."""
@@ -116,7 +116,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🕐 Last Check: {bot_stats['last_check']}
 🗂️ Cache: {cache_stats['total_cached']} items ({cache_stats['expire_minutes']}m expiry)
 🔴 Last Error: {bot_stats['last_error'] or 'None'}
-🟢 Monitor: {'Running' if bot_stats['is_running'] else 'Stopped'}"""
+🟢 Monitor: {'Running' if bot_stats['is_running'] else 'Stopped'}
+🔌 Scraper: {'Ready' if scraper else 'Not initialized'}"""
     await update.message.reply_text(msg, parse_mode='HTML')
 
 # ── Core logic ──────────────────────────────────────────────────────────────────
@@ -139,11 +140,12 @@ def initialize_bot():
     telegram_app.add_handler(CommandHandler("stats", stats_command))
     logger.info("Telegram bot initialized")
 
+    logger.info("Attempting initial IVASMS scraper initialization...")
     scraper = create_scraper(IVASMS_EMAIL, IVASMS_PASSWORD)
     if scraper:
-        logger.info("IVASMS scraper initialized")
+        logger.info("IVASMS scraper initialized successfully")
     else:
-        logger.warning("Failed to initialize IVASMS scraper")
+        logger.warning("Initial scraper initialization failed — will retry in background monitor")
 
 def check_and_send_otps():
     if not scraper:
@@ -171,18 +173,43 @@ def check_and_send_otps():
         bot_stats['total_otps_sent'] += len(new_messages)
 
 def background_monitor():
+    """
+    Background thread that polls for new OTPs every 60 seconds.
+
+    FIX: If the scraper is None (failed to init or session expired), this loop
+    now attempts to re-initialize it every 120 seconds instead of logging
+    'Scraper not initialized' forever and doing nothing.
+    """
+    global scraper
     bot_stats['is_running'] = True
     logger.info("Background OTP monitor started")
+
     while bot_stats['is_running']:
         try:
+            # Re-attempt scraper init if it previously failed or session died
+            if scraper is None:
+                logger.info("Scraper is None — attempting re-initialization...")
+                scraper = create_scraper(IVASMS_EMAIL, IVASMS_PASSWORD)
+                if scraper is None:
+                    logger.error("Scraper re-initialization failed — will retry in 120s")
+                    bot_stats['last_error'] = "Scraper initialization failed (bad credentials or site unreachable)"
+                    time.sleep(120)
+                    continue
+                else:
+                    logger.info("Scraper re-initialized successfully")
+                    bot_stats['last_error'] = None
+
             check_and_send_otps()
             time.sleep(60)
+
         except Exception as e:
             logger.error(f"Monitor error: {e}")
             bot_stats['last_error'] = str(e)
+            # Reset scraper so next iteration forces a fresh login
+            scraper = None
             time.sleep(120)
 
-# ── Flask routes (unchanged) ────────────────────────────────────────────────────
+# ── Flask routes ────────────────────────────────────────────────────────────────
 
 @app.route('/')
 def home():
@@ -208,7 +235,9 @@ def bot_status():
         'total_otps_sent': bot_stats['total_otps_sent'],
         'last_check': bot_stats['last_check'],
         'cache_size': cache_stats['total_cached'],
-        'monitor_running': bot_stats['is_running']
+        'monitor_running': bot_stats['is_running'],
+        'scraper_ready': scraper is not None,
+        'last_error': bot_stats['last_error']
     }
     if request.args.get('send') == 'true':
         ok = send_telegram_message(get_status_message(status))
@@ -253,11 +282,12 @@ def internal_error(e):
 
 def main():
     logger.info("Starting Telegram OTP Bot...")
-    initialize_bot()  # raises on misconfiguration
+    initialize_bot()
 
-    send_telegram_message("🚀 <b>Bot Started!</b>\n\n✅ Scraper ready\n✅ Commands active\n🔍 Monitoring OTPs...")
+    send_telegram_message("🚀 <b>Bot Started!</b>\n\n"
+                          f"{'✅ Scraper ready' if scraper else '⚠️ Scraper not ready — will retry automatically'}\n"
+                          "✅ Commands active\n🔍 Monitoring OTPs...")
 
-    # Flask + OTP monitor run in background threads
     threading.Thread(target=background_monitor, daemon=True).start()
 
     port = int(os.environ.get('PORT', 8080))
@@ -268,9 +298,8 @@ def main():
     flask_thread.start()
     logger.info(f"Flask server started on port {port}")
 
-    # Telegram bot runs on the MAIN thread — required for signal handlers
     logger.info("Starting Telegram polling on main thread...")
-    telegram_app.run_polling(drop_pending_updates=True)  # blocks here
+    telegram_app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
